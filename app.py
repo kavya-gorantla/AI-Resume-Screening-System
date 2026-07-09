@@ -98,6 +98,10 @@ if menu == "Upload Resumes":
                         else:
                             raw_text = extract_text_from_docx(file_path)
                             
+                        if not raw_text or not raw_text.strip():
+                            st.warning(f"⚠️ Could not extract text from **{uploaded_file.name}**. It might be scanned, empty, or protected. Skipping.")
+                            continue
+                            
                         # Preprocessing & Extraction
                         cleaned = clean_text(raw_text)
                         name = extract_name(raw_text)
