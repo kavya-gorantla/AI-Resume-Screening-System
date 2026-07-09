@@ -65,6 +65,29 @@ if 'faiss_index' not in st.session_state:
 if 'ranked_candidates' not in st.session_state:
     st.session_state.ranked_candidates = []
 
+def sync_faiss_with_db():
+    with Session(engine) as session:
+        try:
+            cand_count = session.query(Candidate).count()
+            if cand_count > 0 and st.session_state.faiss_index.current_count == 0:
+                vectors = []
+                ids = []
+                for cand in session.query(Candidate).all():
+                    searchable_text = f"{cand.name or ''} {cand.skills or ''} {cand.education or ''} {cand.experience or ''}"
+                    cleaned = clean_text(searchable_text)
+                    vector = get_embedding(cleaned)
+                    if vector:
+                        vectors.append(vector)
+                        ids.append(cand.id)
+                if vectors:
+                    st.session_state.faiss_index.add_vectors(vectors, ids)
+        except Exception as e:
+            # Handle potential db not initialized yet
+            pass
+
+sync_faiss_with_db()
+
+
 st.sidebar.title("📄 AI Resume Screener")
 st.sidebar.markdown("---")
 menu = st.sidebar.radio("Navigation", ["Dashboard", "Upload Resumes", "Job Description", "Candidates"])
@@ -129,8 +152,9 @@ if menu == "Upload Resumes":
                     # Add to FAISS
                     if new_vectors:
                         st.session_state.faiss_index.add_vectors(new_vectors, new_ids)
-                        
-            st.success(f"✅ Successfully processed {len(uploaded_files)} resumes! Now go to the Job Description tab.")
+                        st.success(f"✅ Successfully processed {len(new_vectors)} resumes! Now go to the Job Description tab.")
+                    else:
+                        st.error("❌ No resumes were successfully processed. Please verify your files have selectable text and are not scanned images.")
         else:
             st.warning("Please upload at least one resume.")
 
