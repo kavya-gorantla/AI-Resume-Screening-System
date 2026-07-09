@@ -29,7 +29,7 @@ class FaissIndex:
         Search for top k similar vectors.
         """
         if self.current_count == 0:
-            return [], []
+            return []
             
         q = np.array([query_vector], dtype=np.float32)
         faiss.normalize_L2(q)
