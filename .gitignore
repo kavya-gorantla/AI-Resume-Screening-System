@@ -22,3 +22,5 @@ outputs/
 # VS Code / IDEs
 .vscode/
 .idea/
+
+.vercel
