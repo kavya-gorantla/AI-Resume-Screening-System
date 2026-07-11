@@ -92,6 +92,18 @@ st.sidebar.title("📄 AI Resume Screener")
 st.sidebar.markdown("---")
 menu = st.sidebar.radio("Navigation", ["Dashboard", "Upload Resumes", "Job Description", "Candidates"])
 st.sidebar.markdown("---")
+
+# Diagnostic System Status
+st.sidebar.markdown("### 📊 System Status")
+st.sidebar.write(f"- **Indexed Resumes:** `{st.session_state.faiss_index.current_count}`")
+with Session(engine) as session:
+    try:
+        db_count = session.query(Candidate).count()
+        st.sidebar.write(f"- **Database Resumes:** `{db_count}`")
+    except:
+        st.sidebar.write(f"- **Database Resumes:** `0`")
+
+st.sidebar.markdown("---")
 st.sidebar.info("Upload resumes and a Job Description to let the AI rank and provide feedback on candidates.")
 
 def save_uploaded_file(uploaded_file, dest_dir):
