@@ -19,12 +19,55 @@ def extract_phone(text):
     return phone[0] if phone else None
 
 def extract_name(text):
-    if not nlp:
+    """
+    Multi-strategy name extraction:
+    1. Top-of-resume heuristic — names almost always appear in the first few lines
+    2. spaCy NER — finds PERSON entities in full text
+    3. Regex fallback — looks for 2–3 consecutive capitalized words
+    """
+    if not text:
         return "Unknown"
-    doc = nlp(text)
-    for ent in doc.ents:
-        if ent.label_ == "PERSON":
-            return ent.text
+
+    # ── Strategy 1: Top-of-resume lines ───────────────────────────────────────
+    # Candidate name is almost always in the first 5 non-empty lines
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    name_pattern = re.compile(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$')
+    # Skip lines that look like headers (all-caps labels), emails, phones, URLs
+    skip_pattern = re.compile(
+        r'@|http|linkedin|github|www\.|^\+?\d|resume|curriculum|vitae|cv\b',
+        re.IGNORECASE
+    )
+    for line in lines[:8]:
+        # Remove common titles/suffixes that might be inline
+        clean_line = re.sub(
+            r'\b(Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Jr\.?|Sr\.?|II|III|IV)\b',
+            '', line, flags=re.IGNORECASE
+        ).strip()
+        if skip_pattern.search(clean_line):
+            continue
+        if name_pattern.match(clean_line):
+            return clean_line.strip()
+
+    # ── Strategy 2: spaCy NER on full text ────────────────────────────────────
+    if nlp:
+        try:
+            # Only analyze first 1000 chars for speed
+            doc = nlp(text[:1000])
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    name = ent.text.strip()
+                    # Filter out very short or very long matches
+                    if 4 <= len(name) <= 40 and len(name.split()) >= 2:
+                        return name
+        except Exception:
+            pass
+
+    # ── Strategy 3: Regex fallback ────────────────────────────────────────────
+    # Find first occurrence of 2-3 consecutive Title Case words
+    regex_match = re.search(r'\b([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b', text[:500])
+    if regex_match:
+        return regex_match.group(1)
+
     return "Unknown"
 
 def load_skills_db():

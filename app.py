@@ -65,6 +65,8 @@ if 'faiss_index' not in st.session_state:
     st.session_state.faiss_index = FaissIndex()
 if 'ranked_candidates' not in st.session_state:
     st.session_state.ranked_candidates = []
+if 'processed_candidates' not in st.session_state:
+    st.session_state.processed_candidates = []   # holds {id, name, email, file} dicts for name review
 
 def sync_faiss_with_db():
     with Session(engine) as session:
@@ -189,6 +191,13 @@ if menu == "Upload Resumes":
                         new_vectors.append(vector)
                         new_ids.append(cand.id)
                         summary_lines.append(f"✅ **{uploaded_file.name}** — {name or 'Unknown'} | {len(skills)} skills extracted")
+                        # Store for name-review panel
+                        st.session_state.processed_candidates.append({
+                            'db_id': cand.id,
+                            'name': name or 'Unknown',
+                            'email': email or '',
+                            'file': uploaded_file.name
+                        })
 
                     except Exception as e:
                         summary_lines.append(f"❌ **{uploaded_file.name}** — error: `{str(e)[:120]}`")
@@ -206,9 +215,50 @@ if menu == "Upload Resumes":
                 st.markdown(line)
 
             if new_vectors:
-                st.success(f"✅ {len(new_vectors)}/{total} resume(s) fully processed and indexed! → Go to **Job Description** tab.")
+                st.success(f"✅ {len(new_vectors)}/{total} resume(s) fully processed and indexed! → Review names below, then go to **Job Description** tab.")
             else:
                 st.error("❌ No resumes were successfully processed. Check the summary above for details.")
+
+    # ── Name Review Panel (always visible after any processing) ─────────────────
+    if st.session_state.processed_candidates:
+        st.markdown("---")
+        st.subheader("👤 Review & Edit Extracted Names")
+        st.caption("The AI automatically extracted these names from your resumes. Correct any wrong names below and click **Save Names**.")
+
+        updated_names = {}
+        for i, cand_info in enumerate(st.session_state.processed_candidates):
+            col_file, col_name = st.columns([2, 3])
+            with col_file:
+                st.markdown(f"📄 `{cand_info['file']}`")
+                if cand_info['email']:
+                    st.caption(cand_info['email'])
+            with col_name:
+                new_name = st.text_input(
+                    "Name",
+                    value=cand_info['name'],
+                    key=f"name_edit_{cand_info['db_id']}_{i}",
+                    label_visibility="collapsed",
+                    placeholder="Enter candidate name..."
+                )
+                updated_names[cand_info['db_id']] = new_name
+
+        if st.button("💾 Save Names", type="secondary"):
+            with Session(engine) as session:
+                saved = 0
+                for db_id, new_name in updated_names.items():
+                    if new_name.strip():
+                        cand = session.get(Candidate, db_id)
+                        if cand:
+                            cand.name = new_name.strip()
+                            saved += 1
+                session.commit()
+            # Update local session state too
+            for cand_info in st.session_state.processed_candidates:
+                if cand_info['db_id'] in updated_names:
+                    cand_info['name'] = updated_names[cand_info['db_id']]
+            st.success(f"✅ Names saved for {saved} candidate(s)!")
+            st.rerun()
+
 
 elif menu == "Job Description":
     st.header("📝 Job Description Details")
