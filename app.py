@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import io
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -107,10 +108,14 @@ st.sidebar.markdown("---")
 st.sidebar.info("Upload resumes and a Job Description to let the AI rank and provide feedback on candidates.")
 
 def save_uploaded_file(uploaded_file, dest_dir):
-    file_path = os.path.join(dest_dir, uploaded_file.name)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    return file_path
+    """Try saving to disk; returns path on success, None on failure."""
+    try:
+        file_path = os.path.join(dest_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path
+    except Exception:
+        return None
 
 if menu == "Upload Resumes":
     st.header("📤 Upload Resumes")
@@ -119,61 +124,91 @@ if menu == "Upload Resumes":
     uploaded_files = st.file_uploader("", type=['pdf', 'docx'], accept_multiple_files=True)
     
     if st.button("Process Resumes", type="primary"):
-        if uploaded_files:
-            with st.spinner("Extracting and vectorizing resumes..."):
-                with Session(engine) as session:
-                    new_vectors = []
-                    new_ids = []
-                    for uploaded_file in uploaded_files:
-                        try:
-                            file_path = save_uploaded_file(uploaded_file, RESUMES_DIR)
-                        except Exception as e:
-                            # Fallback if local disk is read-only (common in some cloud hostings)
-                            file_path = None
-                        
-                        # Parsing (fallback to memory stream if file save failed)
-                        file_target = file_path if file_path else uploaded_file
-                        if uploaded_file.name.endswith('.pdf'):
-                            raw_text = extract_text_from_pdf(file_target)
+        if not uploaded_files:
+            st.warning("Please upload at least one resume.")
+        else:
+            progress_bar = st.progress(0, text="Starting...")
+            status_log = st.empty()          # live per-file status
+            summary_lines = []               # collect results
+            new_vectors = []
+            new_ids = []
+            total = len(uploaded_files)
+
+            with Session(engine) as session:
+                for idx, uploaded_file in enumerate(uploaded_files):
+                    progress_pct = int((idx / total) * 100)
+                    progress_bar.progress(progress_pct, text=f"Processing {idx+1}/{total}: {uploaded_file.name}")
+
+                    try:
+                        # ── 1. Parse ──────────────────────────────────────────────
+                        # Always use a BytesIO stream (cloud-safe; no disk required)
+                        file_bytes = uploaded_file.read()
+                        stream = io.BytesIO(file_bytes)
+
+                        if uploaded_file.name.lower().endswith('.pdf'):
+                            raw_text = extract_text_from_pdf(stream)
                         else:
-                            raw_text = extract_text_from_docx(file_target)
-                            
+                            raw_text = extract_text_from_docx(stream)
+
+                        # Also try saving to disk (best-effort; won't crash if it fails)
+                        save_uploaded_file(uploaded_file, RESUMES_DIR)
+
                         if not raw_text or not raw_text.strip():
-                            st.warning(f"⚠️ Could not extract text from **{uploaded_file.name}**. It might be scanned, empty, or protected. Skipping.")
+                            summary_lines.append(f"⚠️ **{uploaded_file.name}** — no text found (scanned/encrypted?). Skipped.")
                             continue
-                            
-                        # Preprocessing & Extraction
-                        cleaned = clean_text(raw_text)
-                        name = extract_name(raw_text)
-                        email = extract_email(raw_text)
-                        phone = extract_phone(raw_text)
-                        skills = extract_skills(raw_text)
+
+                        # ── 2. Extract ────────────────────────────────────────────
+                        cleaned   = clean_text(raw_text)
+                        name      = extract_name(raw_text)
+                        email     = extract_email(raw_text)
+                        phone     = extract_phone(raw_text)
+                        skills    = extract_skills(raw_text)
                         education = extract_education(raw_text)
                         experience = extract_experience_text(raw_text)
-                        
-                        # Save to DB
+
+                        # ── 3. Save to DB ─────────────────────────────────────────
                         cand = Candidate(
                             name=name, email=email, phone=phone,
-                            education="; ".join(education),
-                            experience=experience,
-                            skills="; ".join(skills)
+                            education="; ".join(education) if education else "",
+                            experience=experience or "",
+                            skills="; ".join(skills) if skills else ""
                         )
                         session.add(cand)
                         session.commit()
-                        
-                        # Embedding
-                        vector = get_embedding(cleaned)
+                        session.refresh(cand)
+
+                        # ── 4. Embed ──────────────────────────────────────────────
+                        # Use full raw_text if cleaned is empty (e.g., all stopwords)
+                        embed_text = cleaned if cleaned.strip() else raw_text
+                        vector = get_embedding(embed_text)
+
+                        if not vector:
+                            summary_lines.append(f"⚠️ **{uploaded_file.name}** — saved to DB but embedding failed. Skipped from index.")
+                            continue
+
                         new_vectors.append(vector)
                         new_ids.append(cand.id)
-                        
-                    # Add to FAISS
-                    if new_vectors:
-                        st.session_state.faiss_index.add_vectors(new_vectors, new_ids)
-                        st.success(f"✅ Successfully processed {len(new_vectors)} resumes! Now go to the Job Description tab.")
-                    else:
-                        st.error("❌ No resumes were successfully processed. Please verify your files have selectable text and are not scanned images.")
-        else:
-            st.warning("Please upload at least one resume.")
+                        summary_lines.append(f"✅ **{uploaded_file.name}** — {name or 'Unknown'} | {len(skills)} skills extracted")
+
+                    except Exception as e:
+                        summary_lines.append(f"❌ **{uploaded_file.name}** — error: `{str(e)[:120]}`")
+                        continue
+
+            progress_bar.progress(100, text="Done!")
+
+            # ── 5. Add all vectors to FAISS at once ───────────────────────────
+            if new_vectors:
+                st.session_state.faiss_index.add_vectors(new_vectors, new_ids)
+
+            # ── 6. Show summary ───────────────────────────────────────────────
+            st.markdown("### 📋 Processing Summary")
+            for line in summary_lines:
+                st.markdown(line)
+
+            if new_vectors:
+                st.success(f"✅ {len(new_vectors)}/{total} resume(s) fully processed and indexed! → Go to **Job Description** tab.")
+            else:
+                st.error("❌ No resumes were successfully processed. Check the summary above for details.")
 
 elif menu == "Job Description":
     st.header("📝 Job Description Details")
