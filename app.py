@@ -113,13 +113,18 @@ if menu == "Upload Resumes":
                     new_vectors = []
                     new_ids = []
                     for uploaded_file in uploaded_files:
-                        file_path = save_uploaded_file(uploaded_file, RESUMES_DIR)
+                        try:
+                            file_path = save_uploaded_file(uploaded_file, RESUMES_DIR)
+                        except Exception as e:
+                            # Fallback if local disk is read-only (common in some cloud hostings)
+                            file_path = None
                         
-                        # Parsing
-                        if file_path.endswith('.pdf'):
-                            raw_text = extract_text_from_pdf(file_path)
+                        # Parsing (fallback to memory stream if file save failed)
+                        file_target = file_path if file_path else uploaded_file
+                        if uploaded_file.name.endswith('.pdf'):
+                            raw_text = extract_text_from_pdf(file_target)
                         else:
-                            raw_text = extract_text_from_docx(file_path)
+                            raw_text = extract_text_from_docx(file_target)
                             
                         if not raw_text or not raw_text.strip():
                             st.warning(f"⚠️ Could not extract text from **{uploaded_file.name}**. It might be scanned, empty, or protected. Skipping.")
